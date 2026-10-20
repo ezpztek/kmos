@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "id": "kmos-admin-uploads",
+      "allowed": {
+        "origins": [
+          "http://localhost:3000",
+          "https://YOUR_PRODUCTION_DOMAIN"
+        ],
+        "methods": ["GET", "HEAD", "PUT"],
+        "headers": ["content-type"]
+      },
+      "exposeHeaders": ["etag"],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}
