@@ -2,7 +2,6 @@ import Storefront from "@/components/Storefront";
 import AdminLogin from "@/components/AdminLogin";
 import AdminPanel from "@/components/AdminPanel";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
-import { adminSeedProducts } from "@/lib/admin-products";
 import { products } from "@/lib/products";
 
 function isAdminRoute(route) {
@@ -29,7 +28,7 @@ export default async function Page({ params, searchParams }) {
       const query = await searchParams;
       return <AdminLogin hasError={query?.error === "invalid"} />;
     }
-    return <AdminPanel initialProducts={adminSeedProducts} />;
+    return <AdminPanel initialProducts={[]} />;
   }
   return <Storefront route={route} />;
 }

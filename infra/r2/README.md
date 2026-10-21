@@ -2,7 +2,7 @@
 
 Recommended bucket name: `kmos-product-images`.
 
-Before applying CORS, replace `https://YOUR_PRODUCTION_DOMAIN` in `cors.json` with the final storefront origin.
+The current admin upload route sends files to R2 from the server, so upload CORS is not required. The included CORS file remains available if a future version restores direct browser uploads; replace `https://YOUR_PRODUCTION_DOMAIN` before applying it.
 
 ```bash
 npx wrangler login
@@ -21,3 +21,5 @@ Suggested object keys:
 - `colorways/<colorway-id>/<uuid>.<extension>`
 
 The admin app should request a short-lived server-generated upload URL, upload directly to R2, then save the resulting object key and public URL in Supabase.
+
+The implemented upload route is `POST /api/admin/uploads`. It requires a valid KMOS admin session, accepts JPG, PNG, WebP, and AVIF files up to 10 MB, and returns an R2 presigned PUT URL that expires after five minutes. `DELETE /api/admin/uploads` removes the object keys associated with a deleted product.

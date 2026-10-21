@@ -4,7 +4,51 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { money, productGroups, products } from "@/lib/products";
 
 const CART_KEY = "kmos-cart-v1";
+const seedProducts = Object.fromEntries(Object.entries(products).map(([id, product]) => [id, product]));
+const seedGroups = Object.fromEntries(Object.entries(productGroups).map(([name, ids]) => [name, [...ids]]));
 const shortDate = new Intl.DateTimeFormat("en-PH", { month: "short", day: "numeric", year: "numeric", timeZone: "Asia/Manila" });
+
+function resetCatalog() {
+  for (const id of Object.keys(products)) delete products[id];
+  Object.assign(products, seedProducts);
+  for (const name of Object.keys(productGroups)) productGroups[name] = [...seedGroups[name]];
+}
+
+function applyCatalog(catalog) {
+  try {
+    if (!catalog?.products || !Array.isArray(catalog.products)) { resetCatalog(); return; }
+    const mapped = {};
+    const groups = { limited: [], popular: [], sale: [] };
+    catalog.products.filter((item) => item.status === "active" || item.status === "draft").sort((left, right) => Number(left.status === "draft") - Number(right.status === "draft") || left.sortOrder - right.sortOrder).forEach((item) => {
+      const fallback = seedProducts[item.id] ?? {};
+      const colorways = item.colorwayEnabled && item.colorways?.length ? item.colorways : [];
+      const colors = colorways.length
+        ? colorways.map((colorway) => [colorway.name || "Default", "art-cream", colorway.color || "#e9d6b9"])
+        : fallback.colors ?? [["Default", "art-cream", "#e9d6b9"]];
+      mapped[item.id] = {
+        ...fallback,
+        category: `${item.category}${item.placement === "sale" ? " · SALE" : ""}`,
+        brand: item.brand,
+        name: item.name,
+        price: Number(item.price),
+        description: item.description,
+        saleTag: item.saleTag || "",
+        ordersUntil: item.ordersUntil || "",
+        status: item.status,
+        notAvailable: item.status === "draft",
+        sizes: item.sizes?.length ? item.sizes : ["One Size"],
+        views: fallback.views ?? ["tote", "pouch"],
+        colors,
+        images: (item.images ?? []).filter((image) => image.url),
+        colorways
+      };
+      if (groups[item.placement]) groups[item.placement].push(item.id);
+    });
+    for (const id of Object.keys(products)) delete products[id];
+    Object.assign(products, mapped);
+    for (const name of Object.keys(productGroups)) productGroups[name] = groups[name];
+  } catch { resetCatalog(); }
+}
 
 function limitedStockTag(product, index) {
   if (!product.ordersUntil) return index % 2 ? "FEW LEFT" : "LOW STOCK";
@@ -25,7 +69,7 @@ function Visual({ view }) {
   return null;
 }
 
-function Header({ cartCount }) {
+function Header({ cartCount, categories, brands, activeFilter, onFilterChange }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const headerRef = useRef(null);
@@ -40,6 +84,11 @@ function Header({ cartCount }) {
 
   const toggleFilter = (name) => setFilter((current) => current === name ? "" : name);
   const closeNavigation = () => { setMenuOpen(false); setFilter(""); };
+  const chooseFilter = (type, value) => {
+    onFilterChange({ type, value });
+    closeNavigation();
+  };
+  const filterOptions = filter === "brands" ? brands : categories;
 
   return (
     <>
@@ -69,12 +118,10 @@ function Header({ cartCount }) {
         </nav>
         <div className={`header-filter-panel${filter ? " is-open" : ""}`} aria-hidden={!filter} data-active-filter={filter}>
           <div className="filter-panel-inner shell">
-            <div className="filter-panel-head"><p>{filter === "brands" ? "Shop by brand" : "Shop by category"}</p><button type="button" aria-label="Close filter menu" onClick={() => setFilter("")}>×</button></div>
-            <div className="filter-list" hidden={filter === "brands"}>
-              {["K-Pantry", "Beauty", "Style", "Home", "Accessories", "Daily essentials"].map((name, index) => <a href={index === 3 ? "/#sale" : index === 0 || index === 5 ? "/#limited" : "/#popular"} key={name}><span>0{index + 1}</span><strong>{name}</strong><b>↗</b></a>)}
-            </div>
-            <div className="filter-list brand-list" hidden={filter !== "brands"}>
-              {[1, 2, 3, 4, 5, 6].map((number) => <a href="/#popular" key={number}><span>0{number}</span><strong>Brand space</strong><small>Add brand name</small></a>)}
+            <div className="filter-panel-head"><p>{filter === "brands" ? "Shop by brand" : "Shop by category"}</p><div>{activeFilter && <button className="filter-clear-button" type="button" onClick={() => { onFilterChange(null); setFilter(""); }}>Clear filter</button>}<button type="button" aria-label="Close filter menu" onClick={() => setFilter("")}>×</button></div></div>
+            <div className={`filter-list${filter === "brands" ? " brand-list" : ""}`}>
+              {filterOptions.map((name, index) => <button className="filter-option" type="button" aria-pressed={activeFilter?.type === filter && activeFilter.value === name} onClick={() => chooseFilter(filter, name)} key={name}><span>{String(index + 1).padStart(2, "0")}</span><strong>{name}</strong><b>→</b></button>)}
+              {!filterOptions.length && <p className="filter-empty">No {filter === "brands" ? "brands" : "categories"} have been added yet.</p>}
             </div>
           </div>
         </div>
@@ -96,44 +143,91 @@ function Footer() {
   );
 }
 
-function ProductArt({ product, stockTag = "" }) {
+function orderedImages(product) {
+  const rank = { main: 0, secondary: 1, gallery: 2 };
+  return [...(product.images ?? [])].sort((left, right) => (rank[left.role] ?? 2) - (rank[right.role] ?? 2));
+}
+
+function imageUrl(image) {
+  return image.objectKey ? `/api/images/${image.objectKey.split("/").map(encodeURIComponent).join("/")}` : image.url;
+}
+
+function ProductArt({ product, stockTag = "", variant = "product" }) {
+  const images = orderedImages(product);
+  const primary = images[0];
+  const secondary = images[1] ?? primary;
   return (
-    <div className={`product-art ${product.colors[0][1]}`}>
-      {stockTag && <span className="stock-tag">{stockTag}</span>}
-      <div className="visual-state visual-primary"><Visual view={product.views[0]} /></div>
-      <div className="visual-state visual-alt"><Visual view={product.views[1]} /></div>
+    <div className={`${variant === "sale" ? "sale-art" : "product-art"} ${product.colors[0][1]}`}>
+      {stockTag && <span className={variant === "sale" ? "sale-label" : "stock-tag"}>{stockTag}</span>}
+      {product.notAvailable && <span className="unavailable-banner">NOT AVAILABLE</span>}
+      <div className="visual-state visual-primary">{primary ? <img className="catalog-product-photo" src={imageUrl(primary)} alt="" /> : <Visual view={product.views[0]} />}</div>
+      <div className="visual-state visual-alt">{secondary ? <img className="catalog-product-photo" src={imageUrl(secondary)} alt="" /> : <Visual view={product.views[1]} />}</div>
     </div>
   );
 }
 
-function HomePage() {
+function baseCategory(product) {
+  return product.category.replace(/\s*·\s*SALE$/i, "");
+}
+
+function saleStockTag(product) {
+  const savedTag = String(product.saleTag ?? "").trim();
+  if (!savedTag) return "SALE";
+  const percentage = savedTag.match(/\d+(?:\.\d+)?/);
+  if (percentage) return `SALE · ${percentage[0]}% OFF`;
+  return `SALE · ${savedTag.toUpperCase()}`;
+}
+
+function HomePage({ activeFilter, onClearFilter }) {
+  const matches = (product) => !activeFilter || (activeFilter.type === "categories" ? baseCategory(product) === activeFilter.value : product.brand === activeFilter.value);
+  const filteredGroups = {
+    limited: productGroups.limited.filter((id) => matches(products[id])),
+    popular: productGroups.popular.filter((id) => matches(products[id])),
+    sale: productGroups.sale.filter((id) => matches(products[id]))
+  };
+  const resultCount = filteredGroups.limited.length + filteredGroups.popular.length + filteredGroups.sale.length;
+  const emptyMessage = <p className="filter-results-empty">No matching items in this section.</p>;
+
   return (
     <main id="main">
+      {activeFilter && <div className="active-filter-bar"><div className="shell"><p>Showing <strong>{activeFilter.type === "categories" ? "category" : "brand"}: {activeFilter.value}</strong><span>{resultCount} {resultCount === 1 ? "item" : "items"}</span></p><button type="button" onClick={onClearFilter}>Clear filter ×</button></div></div>}
       <section className="stock-section section-space" id="limited"><div className="shell">
         <div className="section-head reveal"><div><p className="eyebrow">WHILE SUPPLIES LAST</p><h1>Limited stocks</h1></div><p className="section-note">Small quantities, ready to be discovered.</p></div>
-        <div className="product-grid">{productGroups.limited.map((id, index) => { const product = products[id]; return <a className="product-card reveal" href={`/${id}`} aria-label={`View ${product.name}`} key={id}><ProductArt product={product} stockTag={limitedStockTag(product, index)} /><p className="product-type">{product.category}</p><h2>{product.name}</h2><p className="product-meta">Preview item</p></a>; })}</div>
+        <div className="product-grid">{filteredGroups.limited.map((id, index) => { const product = products[id]; return <a className="product-card reveal" href={`/${id}`} aria-label={`View ${product.name}`} key={id}><ProductArt product={product} stockTag={limitedStockTag(product, index)} /><p className="product-type">{product.category}</p><h2>{product.name}</h2></a>; })}{activeFilter && !filteredGroups.limited.length && emptyMessage}</div>
       </div></section>
       <section className="popular-section section-space" id="popular"><div className="shell">
         <div className="section-head reveal"><div><p className="eyebrow">THE CURRENT EDIT</p><h1>Popular now</h1></div><p className="section-note">Hover over an item to see another view.</p></div>
-        <div className="product-grid">{productGroups.popular.map((id) => { const product = products[id]; return <a className="product-card reveal" href={`/${id}`} aria-label={`View ${product.name}`} key={id}><ProductArt product={product} /><p className="product-type">{product.category}</p><h2>{product.name}</h2><p className="product-meta">Preview item</p></a>; })}</div>
+        <div className="product-grid">{filteredGroups.popular.map((id) => { const product = products[id]; return <a className="product-card reveal" href={`/${id}`} aria-label={`View ${product.name}`} key={id}><ProductArt product={product} /><p className="product-type">{product.category}</p><h2>{product.name}</h2></a>; })}{activeFilter && !filteredGroups.popular.length && emptyMessage}</div>
       </div></section>
       <section className="sale-section section-space" id="sale"><div className="shell">
         <div className="section-head reveal"><div><p className="eyebrow">SELECTED FINDS</p><h1>Sale items</h1></div><p className="section-note">A simple edit of marked-down favorites.</p></div>
-        <div className="sale-grid">{productGroups.sale.map((id) => { const product = products[id]; return <a className="sale-item reveal" href={`/${id}`} aria-label={`View ${product.name}`} key={id}><div className={`sale-art ${product.colors[0][1]}`}><span className="sale-label">SALE</span><div className="visual-state visual-primary"><Visual view={product.views[0]} /></div><div className="visual-state visual-alt"><Visual view={product.views[1]} /></div></div><div><p>{product.category.replace(" · SALE", "")}</p><h2>{product.name}</h2><span>Preview item</span></div></a>; })}</div>
+        <div className="sale-grid">{filteredGroups.sale.map((id) => { const product = products[id]; return <a className="sale-item reveal" href={`/${id}`} aria-label={`View ${product.name}`} key={id}><ProductArt product={product} stockTag={saleStockTag(product)} variant="sale" /><div><p>{baseCategory(product)}</p><h2>{product.name}</h2></div></a>; })}{activeFilter && !filteredGroups.sale.length && emptyMessage}</div>
       </div></section>
     </main>
   );
 }
 
 function ProductPage({ id, product, addToCart }) {
-  const [view, setView] = useState(product.views[0]);
+  const [viewIndex, setViewIndex] = useState(0);
   const [colorIndex, setColorIndex] = useState(0);
   const [size, setSize] = useState(product.sizes[0]);
   const [quantity, setQuantity] = useState(1);
   const [status, setStatus] = useState("");
   const color = product.colors[colorIndex];
+  const selectedColorway = product.colorways?.[colorIndex];
+  const colorwayMedia = (selectedColorway?.images ?? []).filter((image) => image.url || image.objectKey);
+  const itemMedia = orderedImages(product);
+  const media = colorwayMedia.length ? colorwayMedia : itemMedia;
+  const gallery = media.length ? media.map((image) => ({ url: imageUrl(image) })) : product.views.map((view) => ({ view }));
+  const activeMedia = gallery[Math.min(viewIndex, gallery.length - 1)];
+
+  const chooseColorway = (index) => {
+    setColorIndex(index);
+    setViewIndex(0);
+  };
 
   const add = () => {
+    if (product.notAvailable) return;
     addToCart(id, size, color[0], quantity);
     setStatus(`${quantity} × ${product.name} added.`);
   };
@@ -144,15 +238,16 @@ function ProductPage({ id, product, addToCart }) {
         <a className="back-to-shop reveal" href="/#limited"><span aria-hidden="true">←</span> Back to shop</a>
         <div className="product-layout">
           <section className="preview-gallery reveal" aria-label="Item images and colorways">
-            <div className={`preview-picture ${color[1]}`} data-active-view={view}><div className="preview-orbit" aria-hidden="true" /><div className="preview-visual" aria-hidden="true"><Visual view={view} /></div></div>
-            <div className="preview-thumbs" aria-label="Choose item image">{product.views.map((itemView, index) => <button className="preview-thumb" type="button" aria-label={`View image ${index + 1}`} aria-pressed={view === itemView} onClick={() => setView(itemView)} key={itemView}><span className={`preview-thumb-stage ${color[1]}`} aria-hidden="true"><Visual view={itemView} /></span></button>)}</div>
-            <div className="colorway-block"><p>Colorway <strong>{color[0]}</strong></p><div className="color-options">{product.colors.map(([name, , hex], index) => <button className="color-option" type="button" aria-label={name} aria-pressed={colorIndex === index} style={{ "--swatch": hex }} onClick={() => setColorIndex(index)} key={name} />)}</div></div>
+            <div className={`preview-picture ${color[1]}`}><div className="preview-orbit" aria-hidden="true" /><div className="preview-visual">{activeMedia?.url ? <img className="preview-product-photo" src={activeMedia.url} alt={product.name} /> : <Visual view={activeMedia?.view} />}</div></div>
+            <div className="preview-thumbs" aria-label="Choose item image">{gallery.map((item, index) => <button className="preview-thumb" type="button" aria-label={`View image ${index + 1}`} aria-pressed={viewIndex === index} onClick={() => setViewIndex(index)} key={item.url ?? item.view}><span className={`preview-thumb-stage ${color[1]}`} aria-hidden="true">{item.url ? <img className="preview-thumb-photo" src={item.url} alt="" /> : <Visual view={item.view} />}</span></button>)}</div>
+            <div className="colorway-block"><p>Colorway <strong>{color[0]}</strong></p><div className="color-options">{product.colors.map(([name, , hex], index) => <button className="color-option" type="button" aria-label={name} aria-pressed={colorIndex === index} style={{ "--swatch": hex }} onClick={() => chooseColorway(index)} key={name} />)}</div></div>
           </section>
           <section className="preview-info reveal">
             <p className="preview-category">{product.category}</p><h1 id="product-page-name">{product.name}</h1><p className="preview-price">{money.format(product.price)}</p><p className="preview-description">{product.description}</p>
             <fieldset className="size-fieldset"><legend>Available sizes</legend><div className="size-options">{product.sizes.map((itemSize) => <button className="size-option" type="button" aria-pressed={size === itemSize} onClick={() => setSize(itemSize)} key={itemSize}>{itemSize}</button>)}</div></fieldset>
             <div className="quantity-row"><span>Quantity</span><div className="quantity-stepper" aria-label="Choose quantity"><button type="button" aria-label="Decrease quantity" onClick={() => setQuantity((value) => Math.max(1, value - 1))}>−</button><output aria-live="polite">{quantity}</output><button type="button" aria-label="Increase quantity" onClick={() => setQuantity((value) => Math.min(99, value + 1))}>+</button></div></div>
-            <button className="add-preview-button" type="button" onClick={add}>Add to bag</button>
+            <button className="add-preview-button" type="button" disabled={product.notAvailable} onClick={add}>{product.notAvailable ? "Not available" : "Add to bag"}</button>
+            {product.notAvailable && <p className="unavailable-note">This item is currently not available to order.</p>}
             <p className="add-status" aria-live="polite">{status && <>{status} <a href="/cart">View cart →</a></>}</p>
           </section>
         </div>
@@ -181,7 +276,7 @@ function CartPage({ cart, setCart, ready }) {
     <main id="main"><section className="cart-page shell" aria-labelledby="cart-page-name">
       <div className="route-heading reveal"><div><p className="eyebrow">SAVED ON THIS DEVICE</p><h1 id="cart-page-name">Your cart</h1></div><p>No login needed. Your selected items stay in this browser until you remove them or clear its data.</p></div>
       <div className="cart-layout"><div className="cart-list reveal">
-        {!items.length ? <div className="empty-cart"><h2>Your cart is empty</h2><p>Browse the latest KMOS finds and add an item to begin your order.</p><a className="text-link" href="/#limited">Continue shopping →</a></div> : items.map((item, index) => <article className="cart-item" key={`${item.productId}-${item.size}-${item.color}`}><div className={`cart-art ${item.color[1]}`} aria-hidden="true"><Visual view={item.product.views[0]} /></div><div><p className="cart-item-category">{item.product.category}</p><h2>{item.product.name}</h2><p className="cart-variant">{item.size} · {item.color[0]}</p><p className="cart-price">{money.format(item.product.price)} each</p></div><div className="cart-item-actions"><div className="quantity-stepper" aria-label={`Quantity for ${item.product.name}`}><button type="button" aria-label={`Decrease ${item.product.name} quantity`} onClick={() => adjust(index, -1)}>−</button><output aria-live="polite">{item.quantity}</output><button type="button" aria-label={`Increase ${item.product.name} quantity`} onClick={() => adjust(index, 1)}>+</button></div><button className="remove-item" type="button" onClick={() => remove(index)}>Remove</button></div></article>)}
+        {!items.length ? <div className="empty-cart"><h2>Your cart is empty</h2><p>Browse the latest KMOS finds and add an item to begin your order.</p><a className="text-link" href="/#limited">Continue shopping →</a></div> : items.map((item, index) => { const image = orderedImages(item.product)[0]; return <article className="cart-item" key={`${item.productId}-${item.size}-${item.color}`}><div className={`cart-art ${item.color[1]}`} aria-hidden="true">{image ? <img className="cart-product-photo" src={imageUrl(image)} alt="" /> : <Visual view={item.product.views[0]} />}</div><div><p className="cart-item-category">{item.product.category}</p><h2>{item.product.name}</h2><p className="cart-variant">{item.size} · {item.color[0]}</p><p className="cart-price">{money.format(item.product.price)} each</p></div><div className="cart-item-actions"><div className="quantity-stepper" aria-label={`Quantity for ${item.product.name}`}><button type="button" aria-label={`Decrease ${item.product.name} quantity`} onClick={() => adjust(index, -1)}>−</button><output aria-live="polite">{item.quantity}</output><button type="button" aria-label={`Increase ${item.product.name} quantity`} onClick={() => adjust(index, 1)}>+</button></div><button className="remove-item" type="button" onClick={() => remove(index)}>Remove</button></div></article>; })}
       </div><aside className="cart-summary reveal" aria-label="Cart summary"><h2>Order summary</h2><div className="summary-line"><span>Items</span><strong>{itemCount}</strong></div><div className="summary-line"><span>Shipping</span><strong>Confirm in chat</strong></div><div className="summary-line summary-total"><span>Subtotal</span><strong>{money.format(total)}</strong></div><p className="cache-note">Your cart is kept only in this browser. KMOS will confirm stock, delivery, and payment after receiving your receipt.</p><a className="receipt-link" href="/receipt" aria-disabled={!items.length} tabIndex={items.length ? 0 : -1}>Buy · Create receipt</a></aside></div>
     </section></main>
   );
@@ -233,16 +328,73 @@ function NotFoundPage() {
 export default function Storefront({ route }) {
   const [cart, setCart] = useState([]);
   const [cartReady, setCartReady] = useState(false);
+  const [catalogReady, setCatalogReady] = useState(false);
+  const [catalogVersion, setCatalogVersion] = useState(0);
+  const [catalogFilters, setCatalogFilters] = useState({ categories: [], brands: [] });
+  const [activeFilter, setActiveFilter] = useState(null);
   const product = products[route];
 
+  const updateFilter = (nextFilter) => {
+    const url = new URL(window.location.href);
+    if (nextFilter) {
+      url.searchParams.set("filter", nextFilter.type);
+      url.searchParams.set("value", nextFilter.value);
+    } else {
+      url.searchParams.delete("filter");
+      url.searchParams.delete("value");
+    }
+    if (route) {
+      url.pathname = "/";
+      url.hash = "";
+      window.location.assign(url.toString());
+      return;
+    }
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    setActiveFilter(nextFilter);
+  };
+
   useEffect(() => {
+    let cancelled = false;
+    const syncCatalog = async () => {
+      try {
+        const response = await fetch("/api/catalog", { cache: "no-store" });
+        const catalog = await response.json();
+        if (!response.ok) throw new Error(catalog.error || "Could not load the catalog.");
+        if (!cancelled) {
+          applyCatalog(catalog);
+          setCatalogFilters({ categories: catalog.categories ?? [], brands: catalog.brands ?? [] });
+        }
+      } catch {
+        if (!cancelled) resetCatalog();
+      } finally {
+        if (!cancelled) { setCatalogVersion((version) => version + 1); setCatalogReady(true); }
+      }
+    };
+    syncCatalog();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    const readFilter = () => {
+      const search = new URLSearchParams(window.location.search);
+      const type = search.get("filter");
+      const value = search.get("value");
+      setActiveFilter((type === "categories" || type === "brands") && value ? { type, value } : null);
+    };
+    readFilter();
+    window.addEventListener("popstate", readFilter);
+    return () => window.removeEventListener("popstate", readFilter);
+  }, []);
+
+  useEffect(() => {
+    if (!catalogReady) return;
     try {
       const stored = JSON.parse(localStorage.getItem(CART_KEY) ?? "[]");
-      const valid = Array.isArray(stored) ? stored.filter((item) => products[item.productId] && products[item.productId].sizes.includes(item.size) && products[item.productId].colors.some(([name]) => name === item.color) && Number.isInteger(item.quantity) && item.quantity > 0) : [];
+      const valid = Array.isArray(stored) ? stored.filter((item) => products[item.productId] && !products[item.productId].notAvailable && products[item.productId].sizes.includes(item.size) && products[item.productId].colors.some(([name]) => name === item.color) && Number.isInteger(item.quantity) && item.quantity > 0) : [];
       setCart(valid.map((item) => ({ ...item, quantity: Math.min(99, item.quantity) })));
     } catch { setCart([]); }
     setCartReady(true);
-  }, []);
+  }, [catalogReady]);
 
   useEffect(() => { if (cartReady) localStorage.setItem(CART_KEY, JSON.stringify(cart)); }, [cart, cartReady]);
 
@@ -255,21 +407,23 @@ export default function Storefront({ route }) {
     const observer = new IntersectionObserver((entries) => entries.forEach((entry) => { if (entry.isIntersecting) { entry.target.classList.add("is-visible"); observer.unobserve(entry.target); } }), { threshold: 0.14, rootMargin: "0px 0px -38px" });
     elements.forEach((element) => observer.observe(element));
     return () => observer.disconnect();
-  }, [route, cartReady, product]);
+  }, [route, cartReady, product, activeFilter]);
 
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
   const addToCart = (productId, size, color, quantity) => setCart((current) => {
+    if (products[productId]?.notAvailable) return current;
     const matchIndex = current.findIndex((item) => item.productId === productId && item.size === size && item.color === color);
     if (matchIndex < 0) return [...current, { productId, size, color, quantity }];
     return current.map((item, index) => index === matchIndex ? { ...item, quantity: Math.min(99, item.quantity + quantity) } : item);
   });
 
   let content;
-  if (!route) content = <HomePage />;
+  if (!catalogReady) content = <LoadingPage />;
+  else if (!route) content = <HomePage activeFilter={activeFilter} onClearFilter={() => updateFilter(null)} />;
   else if (route === "cart") content = <CartPage cart={cart} setCart={setCart} ready={cartReady} />;
   else if (route === "receipt") content = <ReceiptPage cart={cart} ready={cartReady} />;
-  else if (product) content = <ProductPage id={route} product={product} addToCart={addToCart} />;
+  else if (product) content = <ProductPage key={`${route}-${catalogVersion}`} id={route} product={product} addToCart={addToCart} />;
   else content = <NotFoundPage />;
 
-  return <><a className="skip-link" href="#main">Skip to content</a><div id="top"><Header cartCount={cartCount} />{content}<Footer /></div></>;
+  return <><a className="skip-link" href="#main">Skip to content</a><div id="top"><Header cartCount={cartCount} categories={catalogFilters.categories} brands={catalogFilters.brands} activeFilter={activeFilter} onFilterChange={updateFilter} />{content}<Footer /></div></>;
 }
