@@ -257,7 +257,16 @@ function ProductPage({ id, product, addToCart }) {
 }
 
 function LoadingPage() {
-  return <main id="main"><section className="cart-page shell"><div className="empty-cart"><p>Loading your saved cart…</p></div></section></main>;
+  return (
+    <main id="main" className="store-loading-page">
+      <div className="kmos-loader" role="status" aria-live="polite">
+        <span className="kmos-loader-logo" aria-hidden="true">
+          <img src="/assets/kmos-logo.png" alt="" />
+        </span>
+        <p>Loading KMOS…</p>
+      </div>
+    </main>
+  );
 }
 
 function CartPage({ cart, setCart, ready }) {
